@@ -13,6 +13,9 @@ document.addEventListener("DOMContentLoaded", () => {
       // Clear loading message
       activitiesList.innerHTML = "";
 
+      // Clear and reset activity select to avoid duplicate options
+      activitySelect.innerHTML = '<option value="">-- Select an activity --</option>';
+
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
         const activityCard = document.createElement("div");
@@ -24,7 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <h4>${name}</h4>
           <p>${details.description}</p>
           <p><strong>Schedule:</strong> ${details.schedule}</p>
-          <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
+          <p class="availability"><strong>Availability:</strong> ${spotsLeft} spots left</p>
         `;
 
         // Add participants section
@@ -37,17 +40,70 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const ul = document.createElement("ul");
 
-        if (details.participants && details.participants.length > 0) {
-          details.participants.forEach((p) => {
-            const li = document.createElement("li");
-            li.textContent = p;
-            ul.appendChild(li);
-          });
-        } else {
+        function renderNoParticipants() {
+          ul.innerHTML = "";
           const li = document.createElement("li");
           li.textContent = "No participants yet";
           li.className = "no-participants";
           ul.appendChild(li);
+        }
+
+        if (details.participants && details.participants.length > 0) {
+          details.participants.forEach((p) => {
+            const li = document.createElement("li");
+            li.className = "participant-item";
+
+            const span = document.createElement("span");
+            span.className = "participant-email";
+            span.textContent = p;
+
+            const btn = document.createElement("button");
+            btn.className = "delete-btn";
+            btn.setAttribute("aria-label", `Remove ${p}`);
+            btn.innerHTML = "✖";
+
+            // Delete handler
+            btn.addEventListener("click", async () => {
+              // disable while processing
+              btn.disabled = true;
+              try {
+                const res = await fetch(
+                  `/activities/${encodeURIComponent(name)}/signup?email=${encodeURIComponent(p)}`,
+                  { method: "DELETE" }
+                );
+                if (res.ok) {
+                  // remove from DOM
+                  li.remove();
+                  // update local details and availability display
+                  const idx = details.participants.indexOf(p);
+                  if (idx > -1) details.participants.splice(idx, 1);
+
+                  const availabilityEl = activityCard.querySelector(".availability");
+                  const newSpots = details.max_participants - details.participants.length;
+                  availabilityEl.innerHTML = `<strong>Availability:</strong> ${newSpots} spots left`;
+
+                  // if no participants left, show placeholder
+                  if (!details.participants.length) {
+                    renderNoParticipants();
+                  }
+                } else {
+                  const err = await res.json().catch(()=>({detail: 'Erreur'}));
+                  alert(err.detail || "Failed to remove participant");
+                  btn.disabled = false;
+                }
+              } catch (e) {
+                console.error("Error removing participant:", e);
+                alert("Failed to remove participant. Please try again.");
+                btn.disabled = false;
+              }
+            });
+
+            li.appendChild(span);
+            li.appendChild(btn);
+            ul.appendChild(li);
+          });
+        } else {
+          renderNoParticipants();
         }
 
         participantsDiv.appendChild(ul);
@@ -88,6 +144,9 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.textContent = result.message;
         messageDiv.className = "success";
         signupForm.reset();
+
+        // Rafraîchir la liste des activités pour mettre à jour la carte et participants
+        await fetchActivities();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";

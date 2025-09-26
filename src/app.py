@@ -11,6 +11,9 @@ from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
 
+import sqlite3
+import json
+
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
@@ -19,8 +22,8 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
-activities = {
+# Données d'exemple utilisées uniquement pour pré-peupler la base au démarrage.
+ACTIVITIES_DATA = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
@@ -39,7 +42,6 @@ activities = {
         "max_participants": 30,
         "participants": ["john@mergington.edu", "olivia@mergington.edu"]
     },
-    # Sports-related activities
     "Soccer Team": {
         "description": "Inter-school soccer team training and matches",
         "schedule": "Mondays, Wednesdays, 4:00 PM - 6:00 PM",
@@ -52,7 +54,6 @@ activities = {
         "max_participants": 40,
         "participants": ["noah@mergington.edu", "mia@mergington.edu"]
     },
-    # Artistic activities
     "Art Studio": {
         "description": "Open studio for drawing, painting and mixed media projects",
         "schedule": "Wednesdays, 3:30 PM - 5:30 PM",
@@ -65,7 +66,6 @@ activities = {
         "max_participants": 25,
         "participants": ["charlotte@mergington.edu", "jack@mergington.edu"]
     },
-    # Intellectual activities
     "Science Club": {
         "description": "Hands-on experiments, science fairs and guest lectures",
         "schedule": "Thursdays, 3:30 PM - 5:00 PM",
@@ -81,6 +81,59 @@ activities = {
 }
 
 
+DB_PATH = os.path.join(Path(__file__).parent.parent, "data", "activities.db")
+
+
+def _ensure_db_dir():
+    db_dir = os.path.dirname(DB_PATH)
+    os.makedirs(db_dir, exist_ok=True)
+
+
+def _get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    # Return rows as dict-like
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db():
+    _ensure_db_dir()
+    conn = _get_db_connection()
+    cur = conn.cursor()
+    # Table activities: name (primary key), description, schedule, max_participants, participants (JSON stored as TEXT)
+    cur.execute('''
+    CREATE TABLE IF NOT EXISTS activities (
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        schedule TEXT,
+        max_participants INTEGER,
+        participants TEXT
+    )
+    ''')
+    conn.commit()
+    # Pré-peupler (INSERT OR REPLACE)
+    for name, data in ACTIVITIES_DATA.items():
+        cur.execute('''
+        INSERT OR REPLACE INTO activities (name, description, schedule, max_participants, participants)
+        VALUES (?, ?, ?, ?, ?)
+        ''', (name, data["description"], data["schedule"], data["max_participants"], json.dumps(data["participants"])))
+    conn.commit()
+    conn.close()
+
+
+@app.on_event("startup")
+def startup_db():
+    _init_db()
+    # store path for later use
+    app.state.db_path = DB_PATH
+
+
+@app.on_event("shutdown")
+def shutdown_db():
+    # nothing to close for sqlite connections opened per-request
+    pass
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
@@ -88,24 +141,23 @@ def root():
 
 @app.get("/activities")
 def get_activities():
-    return activities
-
-
-@app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
-    # Validate activity exists
-    if activity_name not in activities:
-        raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Get the specific activity
-    activity = activities[activity_name]
-
-    # Add student
-    # Validate student is not already signed up and activity is not full
-    if email in activity["participants"]:
-        raise HTTPException(status_code=400, detail="Student already signed up for this activity")
-    if len(activity["participants"]) >= activity["max_participants"]:
-        raise HTTPException(status_code=400, detail="Activity is full")
-    activity["participants"].append(email)
-    return {"message": f"Signed up {email} for {activity_name}"}
+    """Retourne toutes les activités depuis MongoDB sous la forme {name: details}"""
+    conn = _get_db_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT name, description, schedule, max_participants, participants FROM activities')
+    rows = cur.fetchall()
+    result = {}
+    for r in rows:
+        participants = []
+        try:
+            participants = json.loads(r["participants"]) if r["participants"] else []
+        except Exception:
+            participants = []
+        result[r["name"]] = {
+            "description": r["description"] or "",
+            "schedule": r["schedule"] or "",
+            "max_participants": r["max_participants"] or 0,
+            "participants": participants,
+        }
+    conn.close()
+    return result
